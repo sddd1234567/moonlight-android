@@ -1,6 +1,23 @@
 package com.limelight;
 
 
+import com.common.helpers.CameraPermissionHelper;
+import com.common.helpers.DisplayRotationHelper;
+import com.common.helpers.FullScreenHelper;
+//import com.common.helpers.SnackbarHelper;
+import com.google.ar.core.ArCoreApk;
+import com.google.ar.core.Camera;
+import com.google.ar.core.Frame;
+import com.google.ar.core.Plane;
+import com.google.ar.core.Pose;
+import com.google.ar.core.Session;
+import com.google.ar.core.TrackingState;
+import com.google.ar.core.exceptions.CameraNotAvailableException;
+import com.google.ar.core.exceptions.UnavailableApkTooOldException;
+import com.google.ar.core.exceptions.UnavailableArcoreNotInstalledException;
+import com.google.ar.core.exceptions.UnavailableDeviceNotCompatibleException;
+import com.google.ar.core.exceptions.UnavailableSdkTooOldException;
+import com.google.ar.core.exceptions.UnavailableUserDeclinedInstallationException;
 import com.limelight.binding.PlatformBinding;
 import com.limelight.binding.input.ControllerHandler;
 import com.limelight.binding.input.KeyboardTranslator;
@@ -22,6 +39,7 @@ import com.limelight.nvstream.input.MouseButtonPacket;
 import com.limelight.nvstream.jni.MoonBridge;
 import com.limelight.preferences.GlPreferences;
 import com.limelight.preferences.PreferenceConfiguration;
+import com.limelight.protobuf.Message;
 import com.limelight.ui.GameGestures;
 import com.limelight.ui.StreamView;
 import com.limelight.utils.Dialog;
@@ -43,15 +61,21 @@ import android.content.pm.ActivityInfo;
 import android.content.res.Configuration;
 import android.graphics.Point;
 import android.graphics.Rect;
+import android.hardware.Sensor;
+import android.hardware.SensorEvent;
+import android.hardware.SensorEventListener;
+import android.hardware.SensorManager;
 import android.hardware.input.InputManager;
 import android.media.AudioManager;
 import android.net.ConnectivityManager;
 import android.net.wifi.WifiManager;
+import android.opengl.GLSurfaceView;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.SystemClock;
+import android.util.Log;
 import android.util.Rational;
 import android.view.Display;
 import android.view.InputDevice;
@@ -70,16 +94,30 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import java.io.ByteArrayInputStream;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.OutputStream;
+import java.net.DatagramPacket;
+import java.net.DatagramSocket;
+import java.net.InetAddress;
 import java.security.cert.CertificateException;
 import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
+import java.text.DecimalFormat;
 import java.util.Locale;
+
+import javax.microedition.khronos.egl.EGLConfig;
+import javax.microedition.khronos.opengles.GL10;
+
+import static com.limelight.protobuf.Message.*;
 
 
 public class Game extends Activity implements SurfaceHolder.Callback,
     OnGenericMotionListener, OnTouchListener, NvConnectionListener, EvdevListener,
-    OnSystemUiVisibilityChangeListener, GameGestures, StreamView.InputCallbacks
+    OnSystemUiVisibilityChangeListener, GameGestures, StreamView.InputCallbacks, GLSurfaceView.Renderer
 {
+    private GyroInfo gyroInfo;
+
     private int lastMouseX = Integer.MIN_VALUE;
     private int lastMouseY = Integer.MIN_VALUE;
     private int lastButtonState = 0;
@@ -121,6 +159,23 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     private WifiManager.WifiLock highPerfWifiLock;
     private WifiManager.WifiLock lowLatencyWifiLock;
+
+    private static final String TAG = Game.class.getSimpleName();
+
+    private GLSurfaceView surfaceView;
+
+    private boolean installRequested;
+
+    private DatagramSocket socket;
+    private InetAddress endPoint;
+    private int port;
+
+    private Session session;
+//    private final SnackbarHelper messageSnackbarHelper = new SnackbarHelper();
+    private DisplayRotationHelper displayRotationHelper;
+
+
+    private static final String SEARCHING_PLANE_MESSAGE = "Searching for surfaces...";
 
     private boolean connectedToUsbDriverService = false;
     private ServiceConnection usbDriverServiceConnection = new ServiceConnection() {
@@ -465,6 +520,135 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
         // The connection will be started when the surface gets created
         streamView.getHolder().addCallback(this);
+
+        setUpArcore();
+    }
+
+    private void setUpArcore(){
+        surfaceView = findViewById(R.id.glSurfaceView);
+        displayRotationHelper = new DisplayRotationHelper(/*context=*/ this);
+
+        // Set up renderer.
+        surfaceView.setPreserveEGLContextOnPause(true);
+        surfaceView.setEGLContextClientVersion(2);
+        surfaceView.setEGLConfigChooser(8, 8, 8, 8, 16, 0); // Alpha used for plane blending.
+        surfaceView.setRenderer(this);
+        surfaceView.setRenderMode(GLSurfaceView.RENDERMODE_CONTINUOUSLY);
+        surfaceView.setWillNotDraw(true);
+
+        installRequested = false;
+
+        final SensorManager sensorManager =
+                (SensorManager) getSystemService(SENSOR_SERVICE);
+        Sensor gyroscopeSensor =
+                sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE);
+// Register the listener
+        sensorManager.registerListener(new SensorEventListener() {
+               @Override
+               public void onSensorChanged(SensorEvent sensorEvent) {
+                   DecimalFormat df=new DecimalFormat("#.##");
+                   ((TextView)findViewById(R.id.textView2)).setText("(" + df.format(sensorEvent.values[0]) + "," + df.format(sensorEvent.values[1]) + "," + df.format(sensorEvent.values[2]) + ")");
+                    if(gyroInfo == null){
+                        gyroInfo = new GyroInfo(sensorEvent.values[0], sensorEvent.values[1], sensorEvent.values[2]);
+                    } else {
+                        gyroInfo.set(sensorEvent.values[0], sensorEvent.values[1], sensorEvent.values[2]);
+                    }
+               }
+
+               @Override
+               public void onAccuracyChanged(Sensor sensor, int i) {
+               }
+           },
+        gyroscopeSensor, SensorManager.SENSOR_DELAY_NORMAL);
+    }
+
+    @Override
+    public void onResume(){
+        super.onResume();
+        if (session == null) {
+            Exception exception = null;
+            String message = null;
+            try {
+                switch (ArCoreApk.getInstance().requestInstall(this, !installRequested)) {
+                    case INSTALL_REQUESTED:
+                        installRequested = true;
+                        return;
+                    case INSTALLED:
+                        break;
+                }
+
+                // ARCore requires camera permissions to operate. If we did not yet obtain runtime
+                // permission on Android M and above, now is a good time to ask the user for it.
+                if (!CameraPermissionHelper.hasCameraPermission(this)) {
+                    CameraPermissionHelper.requestCameraPermission(this);
+                    return;
+                }
+
+                // Create the session.
+                session = new Session(/* context= */ this);
+
+            } catch (UnavailableArcoreNotInstalledException
+                    | UnavailableUserDeclinedInstallationException e) {
+                message = "Please install ARCore";
+                exception = e;
+            } catch (UnavailableApkTooOldException e) {
+                message = "Please update ARCore";
+                exception = e;
+            } catch (UnavailableSdkTooOldException e) {
+                message = "Please update this app";
+                exception = e;
+            } catch (UnavailableDeviceNotCompatibleException e) {
+                message = "This device does not support AR";
+                exception = e;
+            } catch (Exception e) {
+                message = "Failed to create AR session";
+                exception = e;
+            }
+
+            if (message != null) {
+//                messageSnackbarHelper.showError(this, message);
+                Log.e(TAG, "Exception creating session", exception);
+                return;
+            }
+        }
+
+        // Note that order matters - see the note in onPause(), the reverse applies here.
+        try {
+            session.resume();
+        } catch (CameraNotAvailableException e) {
+            // In some cases (such as another camera app launching) the camera may be given to
+            // a different app instead. Handle this properly by showing a message and recreate the
+            // session at the next iteration.
+//            messageSnackbarHelper.showError(this, "Camera not available. Please restart the app.");
+            session = null;
+            return;
+        }
+
+        surfaceView.onResume();
+        displayRotationHelper.onResume();
+    }
+
+    @Override
+    public void onPause() {
+        super.onPause();
+        if (session != null) {
+            displayRotationHelper.onPause();
+            surfaceView.onPause();
+            session.pause();
+        }
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] results) {
+        if (!CameraPermissionHelper.hasCameraPermission(this)) {
+            Toast.makeText(this, "Camera permission is needed to run this application", Toast.LENGTH_LONG)
+                    .show();
+            if (!CameraPermissionHelper.shouldShowRequestPermissionRationale(this)) {
+                // Permission denied with checking "Do not ask again".
+                CameraPermissionHelper.launchPermissionSettings(this);
+            }
+            finish();
+        }
     }
 
     @Override
@@ -514,6 +698,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     @Override
     public void onWindowFocusChanged(boolean hasFocus) {
         super.onWindowFocusChanged(hasFocus);
+        FullScreenHelper.setFullScreenOnWindowFocusChanged(this, hasFocus);
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             // Capture is lost when focus is lost, so it must be requested again
@@ -1573,5 +1758,94 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                  (visibility & View.SYSTEM_UI_FLAG_LOW_PROFILE) == 0) {
             hideSystemUi(2000);
         }
+    }
+
+    @Override
+    public void onSurfaceCreated(GL10 gl10, EGLConfig eglConfig) {
+
+    }
+
+    @Override
+    public void onSurfaceChanged(GL10 gl10, int i, int i1) {
+
+    }
+
+    @Override
+    public void onDrawFrame(GL10 gl10) {
+        if (session == null) {
+            return;
+        }
+        displayRotationHelper.updateSessionIfNeeded(session);
+
+        try {
+            session.setCameraTextureName(1);
+
+            Frame frame = session.update();
+            Camera camera = frame.getCamera();
+            ((TextView)findViewById(R.id.textView)).setText(camera.getPose().toString());
+
+            Pose nowPose = camera.getPose();
+            SendData(getPositionInfo(nowPose));
+
+            if (camera.getTrackingState() == TrackingState.PAUSED) {
+//                messageSnackbarHelper.showMessage(
+//                        this, TrackingStateHelper.getTrackingFailureReasonString(camera));
+                return;
+            }
+
+            if (hasTrackingPlane()) {
+//                messageSnackbarHelper.hide(this);
+            } else {
+//                messageSnackbarHelper.showMessage(this, SEARCHING_PLANE_MESSAGE);
+            }
+        } catch (Throwable t) {
+            // Avoid crashing the application due to unhandled exceptions.
+            Log.e(TAG, "Exception on the OpenGL thread", t);
+        }
+    }
+
+    private PositionInfo getPositionInfo(Pose arPose){
+
+        PositionInfo.Builder builder = PositionInfo.newBuilder();
+        builder.setPosX(arPose.tx());
+        builder.setPosY(arPose.ty());
+        builder.setPosZ(arPose.tz());
+
+        return  builder.build();
+    }
+
+    private void SendData(PositionInfo positionInfo) {
+        try{
+            byte[] data = positionInfo.toByteArray();
+            DatagramPacket sendPacket = new DatagramPacket(data, data.length, endPoint, 8787);
+            socket.send(sendPacket);
+        }
+        catch (Exception e){}
+    }
+
+    /** Checks if we detected at least one plane. */
+    private boolean hasTrackingPlane() {
+        for (Plane plane : session.getAllTrackables(Plane.class)) {
+            if (plane.getTrackingState() == TrackingState.TRACKING) {
+                return true;
+            }
+        }
+        return false;
+    }
+}
+
+class GyroInfo {
+    public float x;
+    public float y;
+    public float z;
+
+    public GyroInfo(float x, float y, float z){
+        set(x,y,z);
+    }
+
+    public void set(float x, float y, float z){
+        this.x = x;
+        this.y = y;
+        this.z = z;
     }
 }

@@ -4,11 +4,19 @@
     android:layout_height="match_parent"
     tools:context=".Game" >
 
+
+    <android.opengl.GLSurfaceView
+        android:id="@+id/glSurfaceView"
+        android:layout_width="fill_parent"
+        android:layout_height="fill_parent"
+        android:layout_gravity="top"/>
+
     <com.limelight.ui.StreamView
         android:id="@+id/surfaceView"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         android:layout_gravity="center" />
+
 
     <TextView
         android:id="@+id/notificationOverlay"
@@ -21,5 +29,21 @@
         android:gravity="right"
         android:background="#80000000"
         android:visibility="gone" />
+
+    <TextView
+        android:id="@+id/textView"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:textAppearance="?android:attr/textAppearanceLarge"
+        android:text="TextView"
+        android:visibility="visible"/>
+
+    <TextView
+        android:id="@+id/textView2"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="50dp"
+        android:textAppearance="?android:attr/textAppearanceLarge"
+        android:text="TextView" />
 
 </merge>

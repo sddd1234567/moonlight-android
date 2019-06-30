@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
     package="com.limelight">
 
     <uses-permission android:name="android.permission.INTERNET" />
@@ -8,6 +9,11 @@
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CAMERA"/>
+    <!-- This tag indicates that this application requires ARCore.  This results in the application
+         only being visible in the Google Play Store on devices that support ARCore. -->
+    <uses-feature android:name="android.hardware.camera.ar" android:required="true"
+        tools:ignore="UnsupportedTvHardware" />
 
     <uses-feature
         android:name="android.hardware.touchscreen"
@@ -135,6 +141,7 @@
                 android:name="android.support.PARENT_ACTIVITY"
                 android:value="com.limelight.PcView" />
         </activity>
+        <meta-data android:name="com.google.ar.core" android:value="required" />
     </application>
 
 </manifest>
