@@ -3,9 +3,11 @@ buildscript {
     repositories {
         jcenter()
         google()
+        mavenCentral()
     }
     dependencies {
-        classpath 'com.android.tools.build:gradle:3.4.1'
+        classpath 'com.android.tools.build:gradle:3.2.1'
+        classpath 'com.google.protobuf:protobuf-gradle-plugin:0.8.9'
     }
 }
 
