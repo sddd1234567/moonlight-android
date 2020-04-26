@@ -100,6 +100,8 @@ import java.io.OutputStream;
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.InetAddress;
+import java.net.SocketException;
+import java.net.UnknownHostException;
 import java.security.cert.CertificateException;
 import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
@@ -178,6 +180,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private static final String SEARCHING_PLANE_MESSAGE = "Searching for surfaces...";
 
     private boolean connectedToUsbDriverService = false;
+    float startTime = System.nanoTime();
+
     private ServiceConnection usbDriverServiceConnection = new ServiceConnection() {
         @Override
         public void onServiceConnected(ComponentName componentName, IBinder iBinder) {
@@ -302,6 +306,16 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         String pcName = Game.this.getIntent().getStringExtra(EXTRA_PC_NAME);
         boolean willStreamHdr = Game.this.getIntent().getBooleanExtra(EXTRA_APP_HDR, false);
         byte[] derCertData = Game.this.getIntent().getByteArrayExtra(EXTRA_SERVER_CERT);
+
+        try {
+            endPoint = InetAddress.getByName(host);
+            port = 5555;
+            socket = new DatagramSocket();
+        } catch (UnknownHostException e) {
+            e.printStackTrace();
+        } catch (SocketException e) {
+            e.printStackTrace();
+        }
 
         X509Certificate serverCert = null;
         try {
@@ -541,25 +555,42 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         final SensorManager sensorManager =
                 (SensorManager) getSystemService(SENSOR_SERVICE);
         Sensor gyroscopeSensor =
-                sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE);
+                sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR);
+        gyroInfo = new GyroInfo(0,0,0, 0);
 // Register the listener
         sensorManager.registerListener(new SensorEventListener() {
                @Override
                public void onSensorChanged(SensorEvent sensorEvent) {
-                   DecimalFormat df=new DecimalFormat("#.##");
-                   ((TextView)findViewById(R.id.textView2)).setText("(" + df.format(sensorEvent.values[0]) + "," + df.format(sensorEvent.values[1]) + "," + df.format(sensorEvent.values[2]) + ")");
-                    if(gyroInfo == null){
-                        gyroInfo = new GyroInfo(sensorEvent.values[0], sensorEvent.values[1], sensorEvent.values[2]);
-                    } else {
-                        gyroInfo.set(sensorEvent.values[0], sensorEvent.values[1], sensorEvent.values[2]);
-                    }
+                   float[] quat = new float[4];
+                   float[] eulerAngle = new float[]{sensorEvent.values[0], sensorEvent.values[1], -sensorEvent.values[2]};
+
+
+                   DecimalFormat df = new DecimalFormat("#.##");
+                   ((TextView)findViewById(R.id.textView2)).setText("(" + eulerAngle[0] + "," + eulerAngle[1] + "," + eulerAngle[2] + ")");
+
+                   SensorManager.getQuaternionFromVector(quat, eulerAngle);
+                    gyroInfo.set(quat[0], quat[1], quat[2],quat[3]);
                }
 
                @Override
                public void onAccuracyChanged(Sensor sensor, int i) {
                }
            },
-        gyroscopeSensor, SensorManager.SENSOR_DELAY_NORMAL);
+        gyroscopeSensor, SensorManager.SENSOR_DELAY_FASTEST);
+    }
+
+    private float offset(float value, float offset) {
+        float target = value + offset;
+
+        while(target > 1 || target < -1){
+            if(target > 1){
+                target -= 2;
+            } else {
+                target += 2;
+            }
+        }
+
+        return target;
     }
 
     @Override
@@ -1782,10 +1813,14 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
             Frame frame = session.update();
             Camera camera = frame.getCamera();
-            ((TextView)findViewById(R.id.textView)).setText(camera.getPose().toString());
 
             Pose nowPose = camera.getPose();
-            SendData(getPositionInfo(nowPose));
+
+            PositionInfo infoToSend = getPositionInfo(nowPose);
+
+            if(infoToSend != null){
+                SendData(infoToSend);
+            }
 
             if (camera.getTrackingState() == TrackingState.PAUSED) {
 //                messageSnackbarHelper.showMessage(
@@ -1805,22 +1840,36 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     }
 
     private PositionInfo getPositionInfo(Pose arPose){
+        if(gyroInfo != null){
+            PositionInfo.Builder builder = PositionInfo.newBuilder();
+            builder.setPosX(arPose.tx());
+            builder.setPosY(arPose.ty());
+            builder.setPosZ(arPose.tz());
+            builder.setRotX(gyroInfo.x);
+            builder.setRotY(gyroInfo.y);
+            builder.setRotZ(gyroInfo.z);
+            builder.setRotW(gyroInfo.w);
+            return  builder.build();
+        }
 
-        PositionInfo.Builder builder = PositionInfo.newBuilder();
-        builder.setPosX(arPose.tx());
-        builder.setPosY(arPose.ty());
-        builder.setPosZ(arPose.tz());
-
-        return  builder.build();
+        return null;
     }
 
     private void SendData(PositionInfo positionInfo) {
+        if(socket == null ||  endPoint == null){
+            ((TextView)findViewById(R.id.textView2)).setText(socket.toString() + endPoint.toString());
+            return;
+        }
         try{
             byte[] data = positionInfo.toByteArray();
-            DatagramPacket sendPacket = new DatagramPacket(data, data.length, endPoint, 8787);
+            DatagramPacket sendPacket = new DatagramPacket(data, data.length, endPoint, port);
             socket.send(sendPacket);
+
+            ((TextView)findViewById(R.id.textView)).setText("(" + positionInfo.getPosX() + "," + positionInfo.getPosY() + "," + positionInfo.getPosZ() + ")");
         }
-        catch (Exception e){}
+        catch (Exception e){
+            ((TextView)findViewById(R.id.textView2)).setText(e.toString());
+        }
     }
 
     /** Checks if we detected at least one plane. */
@@ -1838,14 +1887,23 @@ class GyroInfo {
     public float x;
     public float y;
     public float z;
+    public float w;
 
-    public GyroInfo(float x, float y, float z){
-        set(x,y,z);
+    public GyroInfo(float x, float y, float z, float w){
+        set(x,y,z,w);
     }
 
-    public void set(float x, float y, float z){
+    public void set(float x, float y, float z, float w){
         this.x = x;
         this.y = y;
         this.z = z;
+        this.w = w;
+    }
+
+    public void update(float x, float y, float z){
+        this.x += x;
+        this.y += y;
+        this.z += z;
+        this.w += w;
     }
 }

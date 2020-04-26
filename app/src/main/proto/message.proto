@@ -10,4 +10,5 @@ message PositionInfo {
     float rotX = 4;
     float rotY = 5;
     float rotZ = 6;
+    float rotW = 7;
 }
